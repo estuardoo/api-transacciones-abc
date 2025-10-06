@@ -4,7 +4,7 @@ from botocore.exceptions import ClientError
 from datetime import datetime, timezone, timedelta
 
 TABLE_NAME = os.environ.get("TABLA_TRANSACCION", "TablaTransaccion")
-INDEX = "GSI_Cliente_Fecha"
+INDEX = "GSI_IDCliente_Fecha"
 dynamodb = boto3.resource("dynamodb")
 
 def _resp(code, data):

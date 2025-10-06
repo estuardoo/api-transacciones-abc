@@ -76,7 +76,7 @@ resources:
           - AttributeName: IDTransaccion
             KeyType: HASH
         GlobalSecondaryIndexes:
-          - IndexName: GSI_Cliente_Fecha
+          - IndexName: GSI_IDCliente_Fecha
             KeySchema:
               - AttributeName: IDCliente
                 KeyType: HASH
@@ -84,7 +84,7 @@ resources:
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
-          - IndexName: GSI_Comercio_Fecha
+          - IndexName: GSI_IDComercio_Fecha
             KeySchema:
               - AttributeName: IDComercio
                 KeyType: HASH

@@ -1,3 +1,4 @@
+
 from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Key
 
@@ -22,5 +23,5 @@ def _query_with_index_fallback(table, hash_key_name, hash_key_value, ini=None, f
             raise
     if last_err:
         raise last_err
-    # fallback final (poco eficiente)
+    # fallback final (poco eficiente si no hay índice)
     return table.query(ScanIndexForward=False, **kwargs)

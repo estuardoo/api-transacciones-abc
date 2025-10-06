@@ -27,15 +27,11 @@ def _to_int_or_none(v):
         raise ValueError(f"Valor no entero para ID: {v}")
 
 def _build_fecha_hora_orden(fecha:str, hora:str) -> str:
-    # Normaliza y asegura formato lexicográficamente ordenable
-    # Se asume entrada como 'YYYY-MM-DD' y 'HH:MM:SS'
     if not fecha or not hora:
         return None
     try:
-        # Interpretar como UTC
-        dt = datetime.fromisoformat(f"{fecha}T{hora}")
+        dt = datetime.fromisoformat(f"{fecha}T{hora}")  # YYYY-MM-DD + HH:MM:SS
     except ValueError:
-        # Intento tolerante a formatos cortos
         try:
             from datetime import datetime as _dt
             dt = _dt.strptime(f"{fecha} {hora}", "%Y-%m-%d %H:%M:%S")
@@ -56,43 +52,36 @@ def lambda_handler(event, context):
         count = 0
         with table.batch_writer(overwrite_by_pkeys=["IDTransaccion"]) as bw:
             for it in items:
-                # Obligatorios
                 required = ("IDTransaccion", "IDCliente", "IDComercio", "Fecha", "Hora")
                 if not all(k in it and it[k] not in (None, "") for k in required):
-                    # salta registro incompleto
                     continue
 
                 clean = {k: v for k, v in it.items() if v is not None}
 
-                # Cast obligatorios a int
-                clean["IDCliente"] = _to_int_or_none(clean.get("IDCliente"))
-                clean["IDComercio"] = _to_int_or_none(clean.get("IDComercio"))
-                # IDTransaccion es PK como string para flexibilidad
-                clean["IDTransaccion"] = str(clean.get("IDTransaccion"))
+                # Obligatorios
+                clean['IDTransaccion'] = str(clean.get('IDTransaccion'))
+                clean['IDCliente'] = _to_int_or_none(clean.get('IDCliente'))
+                clean['IDComercio'] = _to_int_or_none(clean.get('IDComercio'))
 
-                # Opcionales ID a int si vienen
-                if "IDTarjeta" in clean:
-                    clean["IDTarjeta"] = _to_int_or_none(clean.get("IDTarjeta"))
-                if "IDMoneda" in clean:
-                    clean["IDMoneda"] = _to_int_or_none(clean.get("IDMoneda"))
-                if "IDCanal" in clean:
+                # Opcionales (IDs enteros)
+                if 'IDTarjeta' in clean:
+                    clean['IDTarjeta'] = _to_int_or_none(clean.get('IDTarjeta'))
+                if 'IDMoneda' in clean:
+                    clean['IDMoneda'] = _to_int_or_none(clean.get('IDMoneda'))
+                if 'IDCanal' in clean:
                     try:
-                        clean["IDCanal"] = _to_int_or_none(clean.get("IDCanal"))
+                        clean['IDCanal'] = _to_int_or_none(clean.get('IDCanal'))
                     except ValueError:
-                        # permite string si no es convertible
+                        pass  # si no es entero, lo dejamos como string
+
+                # Derivar IDMoneda si solo llega CodigoMoneda
+                if 'CodigoMoneda' in clean and 'IDMoneda' not in clean:
+                    try:
+                        clean['IDMoneda'] = _to_int_or_none(clean.get('CodigoMoneda'))
+                    except ValueError:
                         pass
 
-                # Compat: si llega CodigoMoneda sin IDMoneda, deriva
-                if "CodigoMoneda" in clean and "IDMoneda" not in clean:
-                    try:
-                        clean["IDMoneda"] = _to_int_or_none(clean.get("CodigoMoneda"))
-                    except ValueError:
-                        # si no es numérico, lo dejamos solo como CodigoMoneda
-                        pass
-
-                # Generar auxiliar de orden
-                clean["FechaHoraOrden"] = _build_fecha_hora_orden(clean.get("Fecha"), clean.get("Hora"))
-
+                clean['FechaHoraOrden'] = _build_fecha_hora_orden(clean.get('Fecha'), clean.get('Hora'))
                 bw.put_item(Item=clean); count += 1
 
         return _resp(200, {"ok": True, "insertados": count})

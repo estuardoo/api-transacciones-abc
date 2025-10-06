@@ -1,72 +1,122 @@
-# api-transacciones (actualizado)
+
+# api-transacciones (completo)
 
 API Serverless (AWS Lambda + API Gateway + DynamoDB) para gestionar y consultar transacciones y comercios.
-
-## Cambios clave
-- Renombrados campos en **TablaTransaccion**:
-  - `TransaccionID` → **`IDTransaccion`** (PK)
-  - `ClienteID` → **`IDCliente`**
-  - `ComercioID` → **`IDComercio`**
-  - `CodigoMoneda` → **`IDMoneda`**
-  - `IDTransaccionOrigen` → **`IDTarjeta`**
-- Fechas separadas: **`Fecha`** (YYYY-MM-DD) y **`Hora`** (HH:MM:SS).
-- Campo auxiliar interno: **`FechaHoraOrden`** = `YYYY-MM-DD#HH:MM:SS` (UTC) para ordenar/filtrar.
-- Todas las columnas **ID** se manejan como **enteros** (excepto `IDTransaccion` que se guarda como string PK).
-- Eliminado **BusquedaClienteRango** y unificadas búsquedas con parámetros opcionales de fecha.
 
 ## Endpoints
 
 ### GET
 - **Por ID de Transacción**  
-  `GET /transacciones/buscar-por-id?IDTransaccion=...`
+  `GET /transacciones/buscar-por-id?TransaccionID=...`
 
-- **Por ID de Cliente**  
-  `GET /transacciones/buscar-cliente?IDCliente=...&fecha=YYYY-MM-DD`  
-  o `&desde=YYYY-MM-DD&hasta=YYYY-MM-DD`
+- **Por ID de Cliente** (ordenado por fecha desc)  
+  `GET /transacciones/buscar-por-cliente?ClienteID=...`
 
-- **Por ID de Tarjeta**  
-  `GET /transacciones/buscar-tarjeta?IDTarjeta=...&fecha=YYYY-MM-DD`  
-  o `&desde=YYYY-MM-DD&hasta=YYYY-MM-DD`
+- **Por ID de Cliente + Rango de Fechas** (ordenado por fecha desc)  
+  `GET /transacciones/buscar-por-cliente-fechas?ClienteID=...&desde=YYYY-MM-DDTHH:MM:SSZ&hasta=YYYY-MM-DDTHH:MM:SSZ`  
 
-- **Por ID de Comercio**  
-  `GET /transacciones/buscar-comercio?IDComercio=...&fecha=YYYY-MM-DD`  
-  o `&desde=YYYY-MM-DD&hasta=YYYY-MM-DD`
+- **Por ID de Comercio** (ordenado por fecha desc)  
+  `GET /transacciones/buscar-por-comercio?ComercioID=...`
 
-### Reglas de fechas
-- Si envías **solo `fecha`** ⇒ devuelve solo ese día.
-- Si envías **`desde` y `hasta`** ⇒ rango completo [desde, hasta].
-- Si **no** envías fechas ⇒ devuelve **todo el mes** del **último registro** existente para ese ID (ordenado **Fecha desc, Hora desc**).
+### POST (importación masiva)
+- **Cargar Comercios** (JSON array)  
+  `POST /import/comercios`
 
-## Importación
+- **Cargar Transacciones** (JSON array)  
+  `POST /import/transacciones`
 
-### `POST /import/transacciones`
-Cuerpo: **lista** de objetos JSON con la siguiente **matriz**:
+> Todos los endpoints devuelven `{"ok": true/false, ...}` y habilitan CORS.
 
-| Campo | Obligatorio | Tipo | Notas |
-|---|---|---|---|
-| IDTransaccion | Sí | string (PK) | Identificador único de transacción |
-| IDCliente | Sí | int | |
-| IDComercio | Sí | int | |
-| Fecha | Sí | YYYY-MM-DD | |
-| Hora | Sí | HH:MM:SS | |
-| IDTarjeta | No | int | |
-| IDMoneda | No | int | Si falta y llega `CodigoMoneda`, se intenta derivar |
-| CodigoMoneda | No | string/int | Opcional |
-| IDCanal | No | int | Si llega no numérico, se guarda literal |
-| Canal | No | string | Opcional |
-| Monto | No | number | Opcional |
-| Estado | No | string | Opcional |
-| Descripcion | No | string | Opcional |
+---
 
-**Notas:**
-- El sistema genera **`FechaHoraOrden`** automáticamente a partir de `Fecha` y `Hora` (UTC).
-- Validaciones: todos los **ID** (excepto `IDTransaccion`) se intentan castear a **int**.
+## Tablas DynamoDB
 
-### `POST /import/comercios`
-Sin cambios respecto a versión anterior.
+- **TablaComercio**  
+  - PK: `ComercioID` (Number)  
+  - Billing: **PAY_PER_REQUEST** (on-demand)
 
-## Índices DynamoDB recomendados
-- **PK TablaTransaccion**: `IDTransaccion` (S)
-- **GSI_Cliente_Fecha**: HASH=`IDCliente` (N), RANGE=`FechaHoraOrden` (S)
-- **GSI_IDTarjeta_Fecha**: HASH=`IDTarjeta` (N), RANGE=`FechaHoraOrden` (S)
-- **GSI_Comercio_Fecha**: HASH=`IDComercio` (N), RANGE=`FechaHoraOrden` (S)
+- **TablaTransaccion**  
+  - PK: `TransaccionID` (String)  
+  - GSI: `GSI_Cliente_Fecha` → HASH `ClienteID` (Number), RANGE `FechaHoraISO` (String)  
+  - GSI: `GSI_Comercio_Fecha` → HASH `ComercioID` (Number), RANGE `FechaHoraISO` (String)  
+  - Billing: **PAY_PER_REQUEST** (on-demand)
+
+---
+
+## Despliegue
+
+### Opción A: con scripts incluidos
+```bash
+# Setup en EC2 (una sola vez)
+./setup_all.sh
+
+# Deploy (imprime endpoints al final)
+./deploy.sh us-east-1 dev
+```
+
+### Opción B: manual con Serverless
+```bash
+npm i -g serverless
+sls deploy --region us-east-1 --stage dev --verbose
+sls info --region us-east-1 --stage dev
+```
+
+La URL base tendrá la forma:
+```
+https://<restApiId>.execute-api.us-east-1.amazonaws.com/dev
+```
+
+---
+
+## Pruebas rápidas (curl)
+
+```bash
+BASE="https://<restApiId>.execute-api.us-east-1.amazonaws.com/dev"
+
+curl -s -X POST "$BASE/import/comercios" -H "Content-Type: application/json" -d '[{"ComercioID":10,"Nombre":"Tienda Sol","Estado":"Activo"}]' | jq
+
+curl -s -X POST "$BASE/import/transacciones" -H "Content-Type: application/json" -d '[{"TransaccionID":"T-0001","ClienteID":100,"FechaHoraISO":"2025-10-04T20:00:00Z","ComercioID":10,"Monto":120.5}]' | jq
+
+curl -s "$BASE/transacciones/buscar-por-id?TransaccionID=T-0001" | jq
+
+curl -s "$BASE/transacciones/buscar-por-cliente?ClienteID=100" | jq
+
+curl -s "$BASE/transacciones/buscar-por-cliente-fechas?ClienteID=100&desde=2025-10-01T00:00:00Z&hasta=2025-10-05T23:59:59Z" | jq
+
+curl -s "$BASE/transacciones/buscar-por-comercio?ComercioID=10" | jq
+```
+
+---
+
+## Carga de datos (alternativa desde archivos)
+
+```bash
+pip3 install --user boto3 pandas openpyxl
+
+python3 subir_comercios.py --input comercios.xlsx --sheet TablaComercio --region us-east-1
+python3 subir_transacciones.py --input transacciones.xlsx --sheet TablaTransaccion --region us-east-1
+```
+
+> El script convierte `FechaHora` al campo ISO `FechaHoraISO` para que los GSIs funcionen.
+
+---
+
+## Troubleshooting
+
+- **No veo endpoints después del deploy**  
+  - Verifica región/stage: `sls info --region us-east-1 --stage dev`
+  - Lista APIs y rutas: `./deploy.sh` (usa jq si está instalado)
+
+- **Query por fechas no devuelve datos**  
+  - Asegúrate que `FechaHoraISO` esté en **ISO 8601** (`2025-10-01T00:00:00Z`).
+
+- **Permisos IAM**  
+  - `LabRole` debe permitir DynamoDB (`DescribeTable`, `GetItem`, `Query`, `BatchWriteItem`, `PutItem`).
+
+---
+
+## Notas
+
+- DynamoDB en modo **on-demand** (PAY_PER_REQUEST).  
+- CORS habilitado.  
+- Incluye `deploy.sh` y `setup_all.sh` para despliegue automatizado.

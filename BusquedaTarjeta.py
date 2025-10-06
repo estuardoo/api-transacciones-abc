@@ -1,4 +1,3 @@
-
 import os, json, boto3
 from datetime import datetime, timezone, timedelta
 from botocore.exceptions import ClientError
@@ -13,8 +12,7 @@ dynamodb = boto3.resource("dynamodb")
 def _resp(code, data):
     return {"statusCode": code, "headers": {"Content-Type":"application/json","Access-Control-Allow-Origin":"*"}, "body": json.dumps(data)}
 
-def _day_bounds(fecha_yyyy_mm_dd:str):
-    return f"{fecha_yyyy_mm_dd}{SEP}00:00:00", f"{fecha_yyyy_mm_dd}{SEP}23:59:59"
+def _day_bounds(fecha): return f"{fecha}{SEP}00:00:00", f"{fecha}{SEP}23:59:59"
 
 def lambda_handler(event, context):
     params = event.get("queryStringParameters") or {}
@@ -42,7 +40,7 @@ def lambda_handler(event, context):
         if not items: return _resp(200, {"ok": True, "data": []})
 
         ult = items[0]
-        fecha_str = ult.get("Fecha") or (str(ult.get(RANGE_ATTR,"" )).split("#")[0] if ult.get(RANGE_ATTR) else None)
+        fecha_str = ult.get("Fecha") or (str(ult.get(RANGE_ATTR,"")).split("#")[0] if ult.get(RANGE_ATTR) else None)
         if not fecha_str: return _resp(200, {"ok": True, "data": items})
 
         dt = datetime.strptime(fecha_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)

@@ -1,4 +1,3 @@
-
 import os, json, boto3
 from botocore.exceptions import ClientError
 
@@ -7,18 +6,22 @@ ddb = boto3.resource("dynamodb")
 table = ddb.Table(TABLE_NAME)
 
 def _resp(code, data):
-    return {"statusCode": code, "headers": {"Content-Type": "application/json","Access-Control-Allow-Origin": "*"}, "body": json.dumps(data)}
+    return {"statusCode": code, "headers": {"Content-Type":"application/json","Access-Control-Allow-Origin":"*"}, "body": json.dumps(data)}
 
 def _to_int(v, name="IDComercio"):
-    try: return int(v)
-    except Exception: raise ValueError(f"{name} debe ser entero. Valor: {v!r}")
+    try:
+        return int(v)
+    except Exception:
+        raise ValueError(f"{name} debe ser entero. Valor: {v!r}")
 
 def lambda_handler(event, context):
     try:
         body = event.get("body")
-        if not body: return _resp(400, {"ok": False, "msg": "Body vacío"})
+        if not body:
+            return _resp(400, {"ok": False, "msg": "Body vacío"})
         items = json.loads(body)
-        if not isinstance(items, list): return _resp(400, {"ok": False, "msg": "El body debe ser un JSON array de objetos"})
+        if not isinstance(items, list):
+            return _resp(400, {"ok": False, "msg": "El body debe ser un JSON array de objetos"})
 
         count = 0
         with table.batch_writer(overwrite_by_pkeys=["IDComercio"]) as bw:

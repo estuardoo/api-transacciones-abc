@@ -1,23 +1,20 @@
-
 import os, json, boto3
 from datetime import datetime, timezone, timedelta
 from botocore.exceptions import ClientError
-from boto3.dynamodb.conditions import Key
 from utils_search import query_range, query_latest
 
 TABLE_NAME = os.environ.get("TABLA_TRANSACCION", "TablaTransaccion")
 dynamodb = boto3.resource("dynamodb")
 
+INDEX_TRIES = [
+    ("GSI_Cliente_Fecha",  "ClienteID",  "FechaHoraISO",   "T"),  # legacy
+    ("GSI_IDCliente_Fecha","IDCliente",  "FechaHoraOrden", "#"),  # nuevo
+]
+
 def _resp(code, data):
     return {"statusCode": code, "headers": {"Content-Type":"application/json","Access-Control-Allow-Origin":"*"}, "body": json.dumps(data)}
 
-def _day_bounds(fecha_yyyy_mm_dd:str, sep:str):
-    return f"{fecha_yyyy_mm_dd}{sep}00:00:00", f"{fecha_yyyy_mm_dd}{sep}23:59:59"
-
-INDEX_TRIES = [
-    ("GSI_Cliente_Fecha",  "ClienteID",  "FechaHoraISO",   "T"),
-    ("GSI_IDCliente_Fecha","IDCliente",  "FechaHoraOrden", "#"),
-]
+def _day_bounds(fecha, sep): return f"{fecha}{sep}00:00:00", f"{fecha}{sep}23:59:59"
 
 def _parse_params(params):
     idv = params.get("IDCliente")

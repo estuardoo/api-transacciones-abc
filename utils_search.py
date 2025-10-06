@@ -1,4 +1,3 @@
-
 from boto3.dynamodb.conditions import Key
 
 def query_range(table, index_name, hash_attr, value, ini, fin, range_attr):

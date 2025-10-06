@@ -1,4 +1,3 @@
-
 service: api-transacciones-abc
 
 provider:
@@ -44,62 +43,3 @@ functions:
     handler: BusquedaComercio.lambda_handler
     events:
       - httpApi: { path: /transacciones/buscar-comercio, method: GET }
-
-resources:
-  Resources:
-    TablaComercio:
-      Type: AWS::DynamoDB::Table
-      Properties:
-        TableName: ${env:TABLA_COMERCIO, 'TablaComercio'}
-        BillingMode: PAY_PER_REQUEST
-        AttributeDefinitions:
-          - AttributeName: IDComercio
-            AttributeType: N
-        KeySchema:
-          - AttributeName: IDComercio
-            KeyType: HASH
-
-    TablaTransaccion:
-      Type: AWS::DynamoDB::Table
-      Properties:
-        TableName: ${env:TABLA_TRANSACCION, 'TablaTransaccion'}
-        BillingMode: PAY_PER_REQUEST
-        AttributeDefinitions:
-          - AttributeName: IDTransaccion
-            AttributeType: S
-          - AttributeName: IDCliente
-            AttributeType: N
-          - AttributeName: IDComercio
-            AttributeType: N
-          - AttributeName: IDTarjeta
-            AttributeType: N
-          - AttributeName: FechaHoraOrden
-            AttributeType: S
-        KeySchema:
-          - AttributeName: IDTransaccion
-            KeyType: HASH
-        GlobalSecondaryIndexes:
-          - IndexName: GSI_IDCliente_Fecha
-            KeySchema:
-              - AttributeName: IDCliente
-                KeyType: HASH
-              - AttributeName: FechaHoraOrden
-                KeyType: RANGE
-            Projection:
-              ProjectionType: ALL
-          - IndexName: GSI_IDComercio_Fecha
-            KeySchema:
-              - AttributeName: IDComercio
-                KeyType: HASH
-              - AttributeName: FechaHoraOrden
-                KeyType: RANGE
-            Projection:
-              ProjectionType: ALL
-          - IndexName: GSI_IDTarjeta_Fecha
-            KeySchema:
-              - AttributeName: IDTarjeta
-                KeyType: HASH
-              - AttributeName: FechaHoraOrden
-                KeyType: RANGE
-            Projection:
-              ProjectionType: ALL

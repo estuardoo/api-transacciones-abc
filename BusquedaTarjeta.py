@@ -3,49 +3,47 @@ import os, json, boto3
 from datetime import datetime, timezone, timedelta
 from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Key
-from utils_index import _query_with_index_fallback
 
 TABLE_NAME = os.environ.get("TABLA_TRANSACCION", "TablaTransaccion")
+INDEX = "GSI_IDTarjeta_Fecha"  # no hay legacy definido
+RANGE_ATTR = "FechaHoraOrden"
+SEP = "#"
 dynamodb = boto3.resource("dynamodb")
 
 def _resp(code, data):
     return {"statusCode": code, "headers": {"Content-Type":"application/json","Access-Control-Allow-Origin":"*"}, "body": json.dumps(data)}
 
 def _day_bounds(fecha_yyyy_mm_dd:str):
-    return f"{fecha_yyyy_mm_dd}#00:00:00", f"{fecha_yyyy_mm_dd}#23:59:59"
-
-PREFERRED_INDEX = "GSI_IDTarjeta_Fecha"
-FALLBACK_INDEXES = []
-
-def _parse_params(params):
-    idv = params.get("IDTarjeta")
-    if not idv: raise ValueError("Falta IDTarjeta")
-    fecha = params.get("fecha"); desde = params.get("desde"); hasta = params.get("hasta")
-    return int(idv), fecha, desde, hasta
+    return f"{fecha_yyyy_mm_dd}{SEP}00:00:00", f"{fecha_yyyy_mm_dd}{SEP}23:59:59"
 
 def lambda_handler(event, context):
     params = event.get("queryStringParameters") or {}
     table = dynamodb.Table(TABLE_NAME)
     try:
-        idv, fecha, desde, hasta = _parse_params(params)
+        idv = params.get("IDTarjeta")
+        if not idv: raise ValueError("Falta IDTarjeta")
+        idv = int(idv)
+        fecha = params.get("fecha"); desde = params.get("desde"); hasta = params.get("hasta")
 
         if fecha and not (desde or hasta):
             ini, fin = _day_bounds(fecha)
-            q = _query_with_index_fallback(table, "IDTarjeta", idv, ini, fin, PREFERRED_INDEX, FALLBACK_INDEXES)
+            cond = Key("IDTarjeta").eq(idv) & Key(RANGE_ATTR).between(ini, fin)
+            q = table.query(IndexName=INDEX, KeyConditionExpression=cond, ScanIndexForward=False)
             return _resp(200, {"ok": True, "data": q.get("Items", [])})
 
         if desde and hasta:
             ini, _ = _day_bounds(desde); _, fin = _day_bounds(hasta)
-            q = _query_with_index_fallback(table, "IDTarjeta", idv, ini, fin, PREFERRED_INDEX, FALLBACK_INDEXES)
+            cond = Key("IDTarjeta").eq(idv) & Key(RANGE_ATTR).between(ini, fin)
+            q = table.query(IndexName=INDEX, KeyConditionExpression=cond, ScanIndexForward=False)
             return _resp(200, {"ok": True, "data": q.get("Items", [])})
 
-        latest = table.query(IndexName=PREFERRED_INDEX, KeyConditionExpression=Key("IDTarjeta").eq(idv), ScanIndexForward=False, Limit=1)
-        items = (latest or {}).get("Items", [])
-        if not items:
-            return _resp(200, {"ok": True, "data": []})
+        # sin fechas -> usa último registro de ese IDTarjeta en el índice
+        latest = table.query(IndexName=INDEX, KeyConditionExpression=Key("IDTarjeta").eq(idv), ScanIndexForward=False, Limit=1)
+        items = latest.get("Items", [])
+        if not items: return _resp(200, {"ok": True, "data": []})
 
         ult = items[0]
-        fecha_str = ult.get("Fecha") or (str(ult.get("FechaHoraOrden","")).split("#")[0] if ult.get("FechaHoraOrden") else None)
+        fecha_str = ult.get("Fecha") or (str(ult.get(RANGE_ATTR,"")).split("#")[0] if ult.get(RANGE_ATTR) else None)
         if not fecha_str: return _resp(200, {"ok": True, "data": items})
 
         dt = datetime.strptime(fecha_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -54,9 +52,13 @@ def lambda_handler(event, context):
         end = nextm - timedelta(seconds=1)
         ini = start.strftime("%Y-%m-%d#00:00:00"); fin = end.strftime("%Y-%m-%d#%H:%M:%S")
 
-        q = _query_with_index_fallback(table, "IDTarjeta", idv, ini, fin, PREFERRED_INDEX, FALLBACK_INDEXES)
+        cond = Key("IDTarjeta").eq(idv) & Key(RANGE_ATTR).between(ini, fin)
+        q = table.query(IndexName=INDEX, KeyConditionExpression=cond, ScanIndexForward=False)
         return _resp(200, {"ok": True, "data": q.get("Items", [])})
     except ValueError as ve:
         return _resp(400, {"ok": False, "msg": str(ve)})
     except ClientError as e:
+        # si no existe el índice, devolvemos []
+        if e.response.get("Error", {}).get("Code") in ("ResourceNotFoundException","ValidationException"):
+            return _resp(200, {"ok": True, "data": []})
         return _resp(500, {"ok": False, "msg": e.response["Error"]["Message"]})

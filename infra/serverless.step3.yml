@@ -1,0 +1,39 @@
+service: api-transacciones-abc
+provider: { name: aws, runtime: python3.12, region: ${env:AWS_REGION, 'us-east-1'}, stage: ${env:STAGE, 'dev'}, iam: { role: ${env:LAMBDA_IAM_ROLE_ARN, 'arn:aws:iam::102362304326:role/lambda-exec-transacciones'} }, environment: { TABLA_TRANSACCION: ${env:TABLA_TRANSACCION, 'TablaTransaccion'}, TABLA_COMERCIO: ${env:TABLA_COMERCIO, 'TablaComercio'} }, httpApi: { cors: true } }
+functions:
+  ImportComercios: { handler: ImportComercios.lambda_handler, events: [ { httpApi: { path: /import/comercios, method: POST } } ] }
+  ImportTransacciones: { handler: ImportTransacciones.lambda_handler, events: [ { httpApi: { path: /import/transacciones, method: POST } } ] }
+  BusquedaTransaccion: { handler: BusquedaTransaccion.lambda_handler, events: [ { httpApi: { path: /transacciones/buscar-por-id, method: GET } } ] }
+  BusquedaCliente: { handler: BusquedaCliente.lambda_handler, events: [ { httpApi: { path: /transacciones/buscar-cliente, method: GET } } ] }
+  BusquedaTarjeta: { handler: BusquedaTarjeta.lambda_handler, events: [ { httpApi: { path: /transacciones/buscar-tarjeta, method: GET } } ] }
+  BusquedaComercio: { handler: BusquedaComercio.lambda_handler, events: [ { httpApi: { path: /transacciones/buscar-comercio, method: GET } } ] }
+resources:
+  Resources:
+    TablaComercio:
+      Type: AWS::DynamoDB::Table
+      Properties: { TableName: ${env:TABLA_COMERCIO, 'TablaComercio'}, BillingMode: PAY_PER_REQUEST, AttributeDefinitions: [ { AttributeName: IDComercio, AttributeType: N } ], KeySchema: [ { AttributeName: IDComercio, KeyType: HASH } ] }
+    TablaTransaccion:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${env:TABLA_TRANSACCION, 'TablaTransaccion'}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - { AttributeName: IDTransaccion, AttributeType: S }
+          - { AttributeName: IDCliente, AttributeType: N }
+          - { AttributeName: IDComercio, AttributeType: N }
+          - { AttributeName: IDTarjeta, AttributeType: N }
+          - { AttributeName: FechaHoraOrden, AttributeType: S }
+          - { AttributeName: ClienteID, AttributeType: N }
+          - { AttributeName: ComercioID, AttributeType: N }
+          - { AttributeName: FechaHoraISO, AttributeType: S }
+        KeySchema: [ { AttributeName: IDTransaccion, KeyType: HASH } ]
+        GlobalSecondaryIndexes:
+          - IndexName: GSI_Cliente_Fecha
+            KeySchema: [ { AttributeName: ClienteID, KeyType: HASH }, { AttributeName: FechaHoraISO, KeyType: RANGE } ]
+            Projection: { ProjectionType: ALL }
+          - IndexName: GSI_Comercio_Fecha
+            KeySchema: [ { AttributeName: ComercioID, KeyType: HASH }, { AttributeName: FechaHoraISO, KeyType: RANGE } ]
+            Projection: { ProjectionType: ALL }
+          - IndexName: GSI_IDCliente_Fecha
+            KeySchema: [ { AttributeName: IDCliente, KeyType: HASH }, { AttributeName: FechaHoraOrden, KeyType: RANGE } ]
+            Projection: { ProjectionType: ALL }

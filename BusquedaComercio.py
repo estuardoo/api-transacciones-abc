@@ -3,7 +3,7 @@ import os, json, boto3
 from datetime import datetime, timezone, timedelta
 from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Key
-from utils_index import _query_with_index_fallback
+from utils_search import query_range, query_latest
 
 TABLE_NAME = os.environ.get("TABLA_TRANSACCION", "TablaTransaccion")
 dynamodb = boto3.resource("dynamodb")
@@ -11,11 +11,13 @@ dynamodb = boto3.resource("dynamodb")
 def _resp(code, data):
     return {"statusCode": code, "headers": {"Content-Type":"application/json","Access-Control-Allow-Origin":"*"}, "body": json.dumps(data)}
 
-def _day_bounds(fecha_yyyy_mm_dd:str):
-    return f"{fecha_yyyy_mm_dd}#00:00:00", f"{fecha_yyyy_mm_dd}#23:59:59"
+def _day_bounds(fecha_yyyy_mm_dd:str, sep:str):
+    return f"{fecha_yyyy_mm_dd}{sep}00:00:00", f"{fecha_yyyy_mm_dd}{sep}23:59:59"
 
-PREFERRED_INDEX = "GSI_IDComercio_Fecha"
-FALLBACK_INDEXES = ["GSI_Comercio_Fecha"]
+INDEX_TRIES = [
+    ("GSI_Comercio_Fecha",  "ComercioID",  "FechaHoraISO",   "T"),
+    ("GSI_IDComercio_Fecha","IDComercio",  "FechaHoraOrden", "#"),
+]
 
 def _parse_params(params):
     idv = params.get("IDComercio")
@@ -30,37 +32,59 @@ def lambda_handler(event, context):
         idv, fecha, desde, hasta = _parse_params(params)
 
         if fecha and not (desde or hasta):
-            ini, fin = _day_bounds(fecha)
-            q = _query_with_index_fallback(table, "IDComercio", idv, ini, fin, PREFERRED_INDEX, FALLBACK_INDEXES)
-            return _resp(200, {"ok": True, "data": q.get("Items", [])})
-
-        if desde and hasta:
-            ini, _ = _day_bounds(desde); _, fin = _day_bounds(hasta)
-            q = _query_with_index_fallback(table, "IDComercio", idv, ini, fin, PREFERRED_INDEX, FALLBACK_INDEXES)
-            return _resp(200, {"ok": True, "data": q.get("Items", [])})
-
-        latest = None
-        for idx in [PREFERRED_INDEX] + FALLBACK_INDEXES:
-            try:
-                latest = table.query(IndexName=idx, KeyConditionExpression=Key("IDComercio").eq(idv), ScanIndexForward=False, Limit=1)
-                break
-            except ClientError:
-                continue
-        items = (latest or {}).get("Items", [])
-        if not items:
+            for index_name, hash_attr, range_attr, sep in INDEX_TRIES:
+                try:
+                    ini, fin = _day_bounds(fecha, sep)
+                    q = query_range(table, index_name, hash_attr, idv, ini, fin, range_attr)
+                    return _resp(200, {"ok": True, "data": q.get("Items", [])})
+                except ClientError:
+                    continue
             return _resp(200, {"ok": True, "data": []})
 
-        ult = items[0]
-        fecha_str = ult.get("Fecha") or (str(ult.get("FechaHoraOrden","")).split("#")[0] if ult.get("FechaHoraOrden") else None)
-        if not fecha_str: return _resp(200, {"ok": True, "data": items})
+        if desde and hasta:
+            for index_name, hash_attr, range_attr, sep in INDEX_TRIES:
+                try:
+                    ini, _ = _day_bounds(desde, sep); _, fin = _day_bounds(hasta, sep)
+                    q = query_range(table, index_name, hash_attr, idv, ini, fin, range_attr)
+                    return _resp(200, {"ok": True, "data": q.get("Items", [])})
+                except ClientError:
+                    continue
+            return _resp(200, {"ok": True, "data": []})
+
+        latest_item = None
+        latest_sep = "#"
+        latest_hashattr = "IDComercio"
+        for index_name, hash_attr, range_attr, sep in INDEX_TRIES:
+            try:
+                latest = query_latest(table, index_name, hash_attr, idv)
+                items = latest.get("Items", [])
+                if items:
+                    latest_item = items[0]; latest_sep = sep; latest_hashattr = hash_attr
+                    break
+            except ClientError:
+                continue
+
+        if not latest_item:
+            return _resp(200, {"ok": True, "data": []})
+
+        fecha_str = latest_item.get("Fecha")
+        if not fecha_str:
+            for candidate in ["FechaHoraOrden","FechaHoraISO"]:
+                if latest_item.get(candidate):
+                    fecha_str = str(latest_item[candidate]).split("#")[0].split("T")[0]
+                    break
+        if not fecha_str:
+            return _resp(200, {"ok": True, "data": [latest_item]})
 
         dt = datetime.strptime(fecha_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         start = dt.replace(day=1)
         nextm = (start.replace(year=start.year+1, month=1, day=1) if start.month==12 else start.replace(month=start.month+1, day=1))
         end = nextm - timedelta(seconds=1)
-        ini = start.strftime("%Y-%m-%d#00:00:00"); fin = end.strftime("%Y-%m-%d#%H:%M:%S")
+        ini = start.strftime(f"%Y-%m-%d{latest_sep}00:00:00")
+        fin = end.strftime(f"%Y-%m-%d{latest_sep}%H:%M:%S")
 
-        q = _query_with_index_fallback(table, "IDComercio", idv, ini, fin, PREFERRED_INDEX, FALLBACK_INDEXES)
+        idx = next((t for t in INDEX_TRIES if t[1]==latest_hashattr and t[3]==latest_sep), INDEX_TRIES[0])
+        q = query_range(table, idx[0], idx[1], idv, ini, fin, idx[2])
         return _resp(200, {"ok": True, "data": q.get("Items", [])})
     except ValueError as ve:
         return _resp(400, {"ok": False, "msg": str(ve)})

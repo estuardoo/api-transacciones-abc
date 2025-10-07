@@ -36,7 +36,9 @@ def lambda_handler(event, context):
                 else:
                     continue
 
-                bw.put_item(Item=clean); count += 1
+                # Campo espejo: garantizar ComercioID = IDComercio
+ clean['ComercioID'] = clean['IDComercio']
+ bw.put_item(Item=clean); count += 1
 
         return _resp(200, {"ok": True, "insertados": count})
     except ClientError as e:

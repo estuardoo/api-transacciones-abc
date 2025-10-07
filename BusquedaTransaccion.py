@@ -4,35 +4,71 @@ from botocore.exceptions import ClientError
 
 TABLE_NAME = os.environ.get("TABLA_TRANSACCION", "TablaTransaccion")
 dynamodb = boto3.resource("dynamodb")
+table = dynamodb.Table(TABLE_NAME)
 
-def _to_jsonable(obj):
-    if isinstance(obj, Decimal):
-        # Convert Decimal to int when whole-number, else float
-        return int(obj) if obj % 1 == 0 else float(obj)
-    if isinstance(obj, list):
-        return [ _to_jsonable(x) for x in obj ]
-    if isinstance(obj, dict):
-        return { k: _to_jsonable(v) for k,v in obj.items() }
-    return obj
+# ---------- Helpers ----------
+def _to_jsonable(o):
+    if isinstance(o, Decimal):
+        return int(o) if (o % 1 == 0) else float(o)
+    if isinstance(o, list):
+        return [_to_jsonable(x) for x in o]
+    if isinstance(o, dict):
+        return {k: _to_jsonable(v) for k, v in o.items()}
+    return o
 
 def _resp(code, data):
     return {
         "statusCode": code,
-        "headers": {"Content-Type":"application/json","Access-Control-Allow-Origin":"*"},
-        "body": json.dumps(_to_jsonable(data), ensure_ascii=False)
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET,OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type,Authorization",
+        },
+        "body": json.dumps(_to_jsonable(data), ensure_ascii=False),
     }
-, "body": json.dumps(data)}
 
+def _normalize_id(tid):
+    s = str(tid).strip().strip('"').strip("'")
+    n = None
+    try:
+        n = int(float(s))
+    except Exception:
+        pass
+    return s, n
+
+# ---------- Lambda ----------
 def lambda_handler(event, context):
-    params = event.get("queryStringParameters") or {}
+    params = (event or {}).get("queryStringParameters") or {}
     tid = params.get("IDTransaccion")
     if not tid:
         return _resp(400, {"ok": False, "msg": "Falta IDTransaccion"})
-    table = dynamodb.Table(TABLE_NAME)
+
+    s, n = _normalize_id(tid)
+
+    # 1) Intentar con PK string
     try:
-        r = table.get_item(Key={"IDTransaccion": str(tid)})
-        if "Item" not in r:
-            return _resp(404, {"ok": False, "msg": "Transacción no encontrada"})
-        return _resp(200, {"ok": True, "data": r["Item"]})
+        r = table.get_item(Key={"IDTransaccion": s})
+        it = r.get("Item")
+        if it:
+            return _resp(200, {"ok": True, "data": [it]})
     except ClientError as e:
-        return _resp(500, {"ok": False, "msg": e.response["Error"]["Message"]})
+        code = e.response.get("Error", {}).get("Code")
+        # Si el tipo de clave no coincide, probamos con number abajo
+        if code not in ("ValidationException", "ResourceNotFoundException"):
+            return _resp(500, {"ok": False, "msg": e.response["Error"]["Message"]})
+
+    # 2) Intentar con PK number (si es parseable)
+    if n is not None:
+        try:
+            r = table.get_item(Key={"IDTransaccion": n})
+            it = r.get("Item")
+            if it:
+                return _resp(200, {"ok": True, "data": [it]})
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if code not in ("ValidationException", "ResourceNotFoundException"):
+                return _resp(500, {"ok": False, "msg": e.response["Error"]["Message"]})
+
+    # 3) No encontrado
+    return _resp(200, {"ok": True, "data": []})

@@ -1,32 +1,42 @@
-# api-transacciones-abc (completo)
+# api-transacciones-full (compatible con versión que ya te funcionaba)
 
-Serverless (Lambda + API Gateway) + DynamoDB en **un solo `serverless.yml`** que crea tablas **y** funciones.
+Se mantienen tus handlers de búsqueda y `serverless.yml` como estaban. Solo se actualizan los importadores para aceptar **más columnas** en `TablaTransacciones` y agregar soporte de agregados en `TablaComercios`.
 
-## Endpoints
-- POST `/import/comercios`
+## Endpoints (sin cambios)
 - POST `/import/transacciones`
+- POST `/import/comercios`
 - GET `/transacciones/buscar-por-id?IDTransaccion=...`
-- GET `/transacciones/buscar-cliente?IDCliente=...&fecha=YYYY-MM-DD` o `&desde=YYYY-MM-DD&hasta=YYYY-MM-DD`
-- GET `/transacciones/buscar-tarjeta?IDTarjeta=...`
+- GET `/transacciones/buscar-cliente?IDCliente=...`
 - GET `/transacciones/buscar-comercio?IDComercio=...`
+- GET `/transacciones/buscar-tarjeta?IDTarjeta=...`
 
-## Reglas y cambios
-- PK: `IDTransaccion` (string).
-- IDs numéricos: `IDCliente`, `IDComercio`, `IDTarjeta`, `IDMoneda`, `IDCanal` (validados como enteros).
-- Fecha/Hora separadas: `Fecha` y `Hora`; orden compuesto `FechaHoraOrden = "YYYY-MM-DD#HH:MM:SS"`.
-- Import mapea legacy → nuevo (`TransaccionID→IDTransaccion`, `ClienteID→IDCliente`, `ComercioID→IDComercio`, `IDTransaccionOrigen→IDTarjeta`, `CodigoMoneda→IDMoneda`, `Canal→IDCanal` si es convertible).
-- Búsquedas unificadas (Cliente/Tarjeta/Comercio): fecha única, rango, o **sin fechas** (mes del último registro). Orden **desc**.
+## TablaTransacciones (campos admitidos)
+Obligatorios: `IDTransaccion (PK)`, `IDCliente`, `IDComercio`, `Fecha`, `Hora`  
+Derivados: `FechaHoraOrden = "YYYY-MM-DD#HH:MM:SS"`, `FechaHoraISO = "YYYY-MM-DDTHH:MM:SS"`  
+IDs opcionales: `IDTarjeta` (y espejo `TarjetaID`), `IDMoneda`, `IDCanal`, `IDEstado`  
+Strings: `CodigoAutorizacion`, `Estado`, `Canal`, `CodigoMoneda`, `NombreComercio`, `Sector`, `Producto`, `NombreCompleto`, `DNI`, `telefono`, `email`, `Tarjeta`  
+Números: `MontoBruto`, `TasaCambio`, `Monto` (Decimal), `IndicadorAprobada`, `LatenciaAutorizacionMs`, `Fraude` (int)  
+Extras: `FechaCarga` (ISO o `YYYY-MM-DD HH:MM:SS`)
 
-## Despliegue
+> Los handlers siguen usando tus GSIs y devuelven todos los atributos tal como se guardan.
+
+## TablaComercios (agregados mensuales)
+PK compuesta: `Tipo (N)` + `ID (N)`  
+Atributos: `Agregado`, `Grupo`, `Ene..Dic`, `Promedio`, `TotalMonto`, `TotalFraude`, `Composicion`
+
+## Variables de entorno (sin cambios)
+- `TABLA_TRANSACCION` (p.ej. `TablaTransaccion`)
+- `TABLA_COMERCIO` (detalle de comercios)
+- `TABLA_COMERCIOS_AGREG` (agregados mensuales, default `TablaComercios`)
+
+## Deploy (igual que antes)
 ```bash
 export AWS_REGION=us-east-1
 export STAGE=dev
-# si no tienes LabRole, usa tu rol:
-# export LAMBDA_IAM_ROLE_ARN=arn:aws:iam::<ACCOUNT_ID>:role/tu-rol
-# si ya existen tablas con esos nombres, usa otros:
-# export TABLA_TRANSACCION=TablaTransaccionV2
-# export TABLA_COMERCIO=TablaComercioV2
+export TABLA_TRANSACCION=TablaTransaccion
+export TABLA_COMERCIO=TablaComercio
+export TABLA_COMERCIOS_AGREG=TablaComercios
 
+# usa tu CLI y serverless.yml de siempre
 sls deploy --region $AWS_REGION --stage $STAGE
-sls info   --region $AWS_REGION --stage $STAGE
 ```

@@ -1,30 +1,43 @@
-import os, json, boto3
-from botocore.exceptions import ClientError
+import json
+import os
 from datetime import datetime, timezone
+import boto3
+from decimal import Decimal
+from botocore.exceptions import ClientError
 
 TABLE_NAME = os.environ.get("TABLA_TRANSACCION", "TablaTransaccion")
-ddb = boto3.resource("dynamodb")
+ddb = boto3.resource('dynamodb')
 table = ddb.Table(TABLE_NAME)
 
-def _resp(code, data):
+def _resp(status, body):
     return {
-        "statusCode": code,
-        "headers": {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Content-Type,Authorization",
-            "Access-Control-Allow-Methods": "OPTIONS,POST"
-        },
-        "body": json.dumps(data)
+        "statusCode": status,
+        "headers": {"content-type": "application/json"},
+        "body": json.dumps(body, default=str)
     }
 
-def _to_int_or_none(v):
-    if v is None or v == "":
+def _to_int_or_none(x):
+    try:
+        if x in (None, "", "NULL", "null"):
+            return None
+        return int(str(x).strip())
+    except Exception:
+        return None
+
+def _to_dec_or_none(x):
+    if x in (None, "", "NULL", "null"):
         return None
     try:
-        return int(v)
+        # normalize "2 462 502.70" -> "2462502.70" and commas in thousands
+        s = str(x).strip().replace(" ", "")
+        # if it uses comma as thousand sep, remove commas
+        s = s.replace(",", "")
+        return Decimal(s)
     except Exception:
-        raise ValueError(f"Valor no entero para ID: {v}")
+        try:
+            return Decimal(str(float(x)))
+        except Exception:
+            return None
 
 def _parse_dt(fecha:str, hora:str):
     if not fecha or not hora:
@@ -41,63 +54,119 @@ def _parse_dt(fecha:str, hora:str):
 def _fmt_hash(fecha, hora): return _parse_dt(fecha, hora).strftime("%Y-%m-%d#%H:%M:%S")
 def _fmt_iso (fecha, hora): return _parse_dt(fecha, hora).strftime("%Y-%m-%dT%H:%M:%S")
 
+STRING_FIELDS = [
+    "CodigoAutorizacion","Estado","Canal","CodigoMoneda",
+    "NombreComercio","Sector","Producto",
+    "NombreCompleto","DNI","telefono","email","Tarjeta"
+]
+DEC_FIELDS = ["MontoBruto","TasaCambio","Monto"]
+INT_FIELDS = ["IndicadorAprobada","LatenciaAutorizacionMs","Fraude"]
+
 def lambda_handler(event, context):
     try:
         body = event.get("body")
         if not body:
             return _resp(400, {"ok": False, "msg": "Body vacío"})
         items = json.loads(body)
+        if isinstance(items, dict):
+            items = items.get("data", [items])
         if not isinstance(items, list):
-            return _resp(400, {"ok": False, "msg": "Se espera una lista de objetos"})
+            return _resp(400, {"ok": False, "msg": "Se espera una lista o {'data': [...]}"})
+    except Exception as e:
+        return _resp(400, {"ok": False, "msg": f"JSON inválido: {e}"})
 
-        count = 0
+    inserted = 0
+    try:
         with table.batch_writer(overwrite_by_pkeys=["IDTransaccion"]) as bw:
             for it in items:
-                if not it:
+                if not isinstance(it, dict):
                     continue
+                it = dict(it)  # shallow copy
 
-                it = dict(it)
                 # Normalización nombres nuevos y legacy
                 it.setdefault("IDTransaccion", it.get("TransaccionID"))
                 it.setdefault("IDCliente", it.get("ClienteID"))
                 it.setdefault("IDComercio", it.get("ComercioID"))
-                it.setdefault("IDTarjeta", it.get("IDTransaccionOrigen"))
+                # soporte para espejo de tarjeta
+                it.setdefault("IDTarjeta", it.get("TarjetaID"))
 
-                # Mapeos opcionales
-                if "IDMoneda" not in it and "CodigoMoneda" in it:
-                    try: it["IDMoneda"] = _to_int_or_none(it["CodigoMoneda"])
-                    except ValueError: pass
-                if "IDCanal" not in it and "Canal" in it:
-                    try: it["IDCanal"] = _to_int_or_none(it["Canal"])
-                    except ValueError: pass
-
+                # Requeridos mínimos
                 required = ("IDTransaccion", "IDCliente", "IDComercio", "Fecha", "Hora")
                 if not all(k in it and it[k] not in (None, "") for k in required):
+                    # si falta algo crítico, omitimos esa fila
                     continue
 
-                clean = {k: v for k, v in it.items() if v is not None}
-                # Tipos
-                clean["IDTransaccion"] = str(clean["IDTransaccion"])
-                clean["IDCliente"] = _to_int_or_none(clean["IDCliente"])
-                clean["IDComercio"] = _to_int_or_none(clean["IDComercio"])
-                if "IDTarjeta" in clean: clean["IDTarjeta"] = _to_int_or_none(clean["IDTarjeta"])
-                if "IDMoneda" in clean: clean["IDMoneda"] = _to_int_or_none(clean["IDMoneda"])
-                if "IDCanal" in clean:
-                    try: clean["IDCanal"] = _to_int_or_none(clean["IDCanal"])
-                    except ValueError: pass
+                clean = {}
 
-                # Orden nuevo y legacy
-                clean["FechaHoraOrden"] = _fmt_hash(clean["Fecha"], clean["Hora"])  # nuevo: YYYY-MM-DD#HH:MM:SS
-                clean["FechaHoraISO"]   = _fmt_iso (clean["Fecha"], clean["Hora"])  # legacy: YYYY-MM-DDTHH:MM:SS
+                # PK
+                clean["IDTransaccion"] = str(it["IDTransaccion"])
 
-                # espejos legacy para GSIs viejos
-                clean["ClienteID"]  = clean["IDCliente"]
-                clean["ComercioID"] = clean["IDComercio"]
+                # IDs (enteros) + espejos legacy
+                clean["IDCliente"]  = _to_int_or_none(it.get("IDCliente"))
+                clean["IDComercio"] = _to_int_or_none(it.get("IDComercio"))
+                if clean["IDCliente"] is not None:
+                    clean["ClienteID"] = clean["IDCliente"]
+                if clean["IDComercio"] is not None:
+                    clean["ComercioID"] = clean["IDComercio"]
 
-                bw.put_item(Item=clean); count += 1
+                idt = _to_int_or_none(it.get("IDTarjeta"))
+                if idt is not None:
+                    clean["IDTarjeta"] = idt
+                    clean["TarjetaID"] = idt
 
-        return _resp(200, {"ok": True, "insertados": count})
+                # IDs opcionales
+                for k in ("IDMoneda","IDCanal","IDEstado"):
+                    v = _to_int_or_none(it.get(k))
+                    if v is not None:
+                        clean[k] = v
+
+                # Mantener también strings descriptivos
+                for k in STRING_FIELDS:
+                    v = it.get(k)
+                    if v not in (None, ""):
+                        clean[k] = str(v).strip()
+
+                # Si no viene IDMoneda/IDCanal, intentar derivar si el string es convertible a int, sin borrar string
+                if "IDMoneda" not in clean and "CodigoMoneda" in clean:
+                    iv = _to_int_or_none(clean["CodigoMoneda"])
+                    if iv is not None: clean["IDMoneda"] = iv
+                if "IDCanal" not in clean and "Canal" in clean:
+                    iv = _to_int_or_none(clean["Canal"])
+                    if iv is not None: clean["IDCanal"] = iv
+
+                # Montos y números
+                for k in DEC_FIELDS:
+                    dv = _to_dec_or_none(it.get(k))
+                    if dv is not None:
+                        clean[k] = dv
+                for k in INT_FIELDS:
+                    iv = _to_int_or_none(it.get(k))
+                    if iv is not None:
+                        clean[k] = iv
+
+                # Fecha/Hora y derivados
+                clean["Fecha"] = str(it["Fecha"])
+                clean["Hora"]  = str(it["Hora"])
+                clean["FechaHoraOrden"] = _fmt_hash(clean["Fecha"], clean["Hora"])  # YYYY-MM-DD#HH:MM:SS
+                clean["FechaHoraISO"]   = _fmt_iso (clean["Fecha"], clean["Hora"])  # YYYY-MM-DDTHH:MM:SS
+
+                # FechaCarga opcional (aceptar 'YYYY-MM-DD HH:MM:SS' o ISO)
+                fc = it.get("FechaCarga")
+                if fc:
+                    try:
+                        s = str(fc)
+                        if " " in s and "T" not in s:
+                            dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                            clean["FechaCarga"] = dt.strftime("%Y-%m-%dT%H:%M:%S%z")
+                        else:
+                            clean["FechaCarga"] = s
+                    except Exception:
+                        clean["FechaCarga"] = str(fc)
+
+                # Escribir
+                bw.put_item(Item={k: v for k, v in clean.items() if v is not None})
+                inserted += 1
     except ClientError as e:
         return _resp(500, {"ok": False, "msg": e.response["Error"]["Message"]})
-    except Exception as ex:
-        return _resp(500, {"ok": False, "msg": str(ex)})
+
+    return _resp(200, {"ok": True, "insertados": inserted, "tabla": TABLE_NAME})

@@ -1,97 +1,100 @@
-import os, json, boto3
+import json
+import os
+import boto3
+from decimal import Decimal
 from botocore.exceptions import ClientError
 
-TABLE_NAME = os.environ.get("TABLA_COMERCIO", "TablaComercio")
-ddb = boto3.resource("dynamodb")
-table = ddb.Table(TABLE_NAME)
+TABLE_DET = os.environ.get("TABLA_COMERCIO", "TablaComercio")
+TABLE_AGR = os.environ.get("TABLA_COMERCIOS_AGREG", "TablaComercios")
 
-def _resp(code, data):
-    return {
-        "statusCode": code,
-        "headers": {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Content-Type,Authorization",
-            "Access-Control-Allow-Methods": "OPTIONS,POST"
-        },
-        "body": json.dumps(data, ensure_ascii=False)
-    }
+ddb = boto3.resource('dynamodb')
+t_det = ddb.Table(TABLE_DET)
+t_agr = ddb.Table(TABLE_AGR)
 
-def _to_int_smart(v, name="IDComercio"):
-    s = str(v).strip().replace(" ", "")
-    if s == "":
-        raise ValueError(f"{name} requerido")
+def _resp(status, body):
+    return {"statusCode": status, "headers": {"content-type": "application/json"}, "body": json.dumps(body, default=str)}
+
+def _to_int(x):
     try:
-        return int(s)
+        return int(str(x).strip())
+    except Exception:
+        return None
+
+def _to_dec(x):
+    if x in (None, "", "NULL", "null"):
+        return None
+    try:
+        s = str(x).strip().replace(" ", "").replace(",", "")
+        return Decimal(s)
     except Exception:
         try:
-            return int(float(s))
+            return Decimal(str(float(x)))
         except Exception:
-            raise ValueError(f"{name} debe ser entero. Valor: {v!r}")
-
-def _clean_str(v):
-    if v is None:
-        return ""
-    return str(v).strip()
+            return None
 
 def lambda_handler(event, context):
     try:
         body = event.get("body")
-        if not body:
-            return _resp(400, {"ok": False, "msg": "Body vacío"})
-        try:
-            data = json.loads(body)
-        except Exception:
-            return _resp(400, {"ok": False, "msg": "JSON inválido"})
+        if not body: return _resp(400, {"ok": False, "msg": "Body vacío"})
+        payload = json.loads(body)
+    except Exception as e:
+        return _resp(400, {"ok": False, "msg": f"JSON inválido: {e}"})
 
-        # Acepta item único o array
-        items = data if isinstance(data, list) else data.get("data") if isinstance(data, dict) else None
-        if items is None:
-            # si enviaron un solo objeto
-            if isinstance(data, dict):
-                items = [data]
-            else:
-                return _resp(400, {"ok": False, "msg": "Estructura inválida. Esperado array o {'data': [...]}."})
+    # admitir lista directa o {"data": [...]}
+    items = []
+    if isinstance(payload, list):
+        items = payload
+    elif isinstance(payload, dict):
+        items = payload.get("data", [])
+        if isinstance(items, dict):
+            items = [items]
+    else:
+        return _resp(400, {"ok": False, "msg": "JSON debe ser lista o {'data': [...]}"})
 
-        count = 0
-        with table.batch_writer(overwrite_by_pkeys=["IDComercio"]) as bw:
+    ins_det = ins_agr = 0
+
+    try:
+        with t_det.batch_writer(overwrite_by_pkeys=["IDComercio"]) as bw_det, \
+             t_agr.batch_writer(overwrite_by_pkeys=["Tipo","ID"]) as bw_agr:
+
             for it in items:
                 if not isinstance(it, dict):
                     continue
-                clean = {}
+                it = dict(it)
 
-                # IDComercio (requerido)
-                if "IDComercio" in it and str(it["IDComercio"]).strip() != "":
-                    clean["IDComercio"] = _to_int_smart(it["IDComercio"], "IDComercio")
-                elif "ComercioID" in it and str(it["ComercioID"]).strip() != "":
-                    clean["IDComercio"] = _to_int_smart(it["ComercioID"], "ComercioID")
-                else:
-                    raise ValueError("IDComercio requerido")
+                # Detección de agregados mensuales (TablaComercios)
+                if all(k in it for k in ("Tipo","ID","Agregado","Grupo")):
+                    row = {
+                        "Tipo": _to_int(it.get("Tipo")) or 0,
+                        "ID":   _to_int(it.get("ID")) or 0,
+                        "Agregado": str(it.get("Agregado")).strip(),
+                        "Grupo":    str(it.get("Grupo")).strip(),
+                    }
+                    for c in ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic",
+                              "Promedio","TotalMonto","TotalFraude","Composicion"]:
+                        dv = _to_dec(it.get(c))
+                        if dv is not None: row[c] = dv
+                    bw_agr.put_item(Item=row); ins_agr += 1
+                    continue
 
-                # Espejo para compatibilidad
-                clean["ComercioID"] = clean["IDComercio"]
+                # Detalle de comercios (TablaComercio)
+                idc = it.get("IDComercio") or it.get("ComercioID")
+                if idc is None:
+                    # no es fila válida de detalle
+                    continue
+                try:
+                    idc_int = int(str(idc).strip())
+                except Exception:
+                    idc_int = idc  # dejar como string si no es convertible
 
-                # Campos opcionales (string)
-                for k in ["Nombre","RUC","ActividadEconomica","Sector","Direccion","Telefono","Email","Estado"]:
-                    if k in it:
-                        clean[k] = _clean_str(it[k])
+                row = {k: v for k, v in it.items() if v is not None and v != ""}
+                row["IDComercio"] = idc_int
+                if "ComercioID" not in row:
+                    row["ComercioID"] = idc_int
+                bw_det.put_item(Item=row); ins_det += 1
 
-                # IDEstado (opcional → int)
-                if "IDEstado" in it and str(it["IDEstado"]).strip() != "":
-                    clean["IDEstado"] = _to_int_smart(it["IDEstado"], "IDEstado")
-                else:
-                    # Si no viene, intentar inferir desde Estado
-                    estado = str(it.get("Estado","")).strip().lower()
-                    if estado in ("activo","active","1","true","sí","si"):
-                        clean["IDEstado"] = 1
-                    elif estado in ("inactivo","inactive","0","false","no"):
-                        clean["IDEstado"] = 0
-
-                bw.put_item(Item=clean)
-                count += 1
-
-        return _resp(200, {"ok": True, "insertados": count})
     except ClientError as e:
         return _resp(500, {"ok": False, "msg": e.response["Error"]["Message"]})
-    except Exception as ex:
-        return _resp(500, {"ok": False, "msg": str(ex)})
+
+    return _resp(200, {"ok": True, "insertados_detalle": ins_det, "insertados_agregados": ins_agr,
+                       "tabla_detalle": TABLE_DET, "tabla_agregados": TABLE_AGR})

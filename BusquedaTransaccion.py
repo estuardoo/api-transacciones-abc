@@ -6,7 +6,6 @@ TABLE_NAME = os.environ.get("TABLA_TRANSACCION", "TablaTransaccion")
 dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table(TABLE_NAME)
 
-# ---------- Helpers ----------
 def _to_jsonable(o):
     if isinstance(o, Decimal):
         return int(o) if (o % 1 == 0) else float(o)
@@ -37,7 +36,6 @@ def _normalize_id(tid):
         pass
     return s, n
 
-# ---------- Lambda ----------
 def lambda_handler(event, context):
     params = (event or {}).get("queryStringParameters") or {}
     tid = params.get("IDTransaccion")
@@ -46,7 +44,7 @@ def lambda_handler(event, context):
 
     s, n = _normalize_id(tid)
 
-    # 1) Intentar con PK string
+    # Intentar con PK string
     try:
         r = table.get_item(Key={"IDTransaccion": s})
         it = r.get("Item")
@@ -54,11 +52,10 @@ def lambda_handler(event, context):
             return _resp(200, {"ok": True, "data": [it]})
     except ClientError as e:
         code = e.response.get("Error", {}).get("Code")
-        # Si el tipo de clave no coincide, probamos con number abajo
         if code not in ("ValidationException", "ResourceNotFoundException"):
             return _resp(500, {"ok": False, "msg": e.response["Error"]["Message"]})
 
-    # 2) Intentar con PK number (si es parseable)
+    # Intentar con PK number
     if n is not None:
         try:
             r = table.get_item(Key={"IDTransaccion": n})
@@ -70,5 +67,4 @@ def lambda_handler(event, context):
             if code not in ("ValidationException", "ResourceNotFoundException"):
                 return _resp(500, {"ok": False, "msg": e.response["Error"]["Message"]})
 
-    # 3) No encontrado
     return _resp(200, {"ok": True, "data": []})
